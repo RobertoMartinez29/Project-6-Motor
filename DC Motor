@@ -1,0 +1,116 @@
+#include <msp430.h>
+#define RedLED BIT0
+#define GreenLED BIT6
+#define BUTTON BIT3 
+#define MOTOR BIT6
+
+
+char velocity = 1;
+const int period = 100;
+volatile int timerCount = 0;
+volatile char waitingRelease = 0;
+
+int main(void)
+{
+ WDTCTL = WDTPW + WDTHOLD; // Stop watchdog timer
+ P1DIR |= (RedLED + GreenLED);   // Set P1.0 and P1.7 to output direction
+                           // P1.3 must stay as input
+
+P1DIR |= MOTOR;
+P1OUT |= MOTOR;
+P1SEL |= MOTOR;
+
+ P1OUT &= ~(RedLED + GreenLED);  // turn LEDs off initially
+ P1REN |= BUTTON;          // turn on pull-    resistor
+ P1OUT |= BUTTON;          // turn on pull-UP  resistor
+ P1IE  |= BUTTON;          // P1.3 interrupt enabled
+ P1IES |= BUTTON;          // P1.3 interrupt triggered on high-to-low transition
+ P1IFG &= ~BUTTON;         // P1.3 IFG cleared
+
+TACCR0 = period - 1;
+TACCR1 = 25;
+TACCTL1 = OUTMOD_7;
+TACTL = TASSEL_2 | MC_1;
+
+ __enable_interrupt();     // enable all interrupts
+
+ LPM1;
+
+}
+
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void) 
+{
+  TA0CCTL2 |= CCIE;
+  TA0CCR2 = TA0R + 1;
+  P1IFG &= ~BUTTON;
+  P1IE &= ~BUTTON;
+  waitingRelease = 1;
+}
+
+#pragma vector=TIMER0_A1_VECTOR
+__interrupt void Timer_A (void)
+{
+  switch (__even_in_range(TA0IV, TA0IV_TAIFG))
+  {
+    case TA0IV_TACCR2:
+    timerCount++;
+
+      if (waitingRelease == 1)
+      {
+        if (timerCount >= 500)
+        {
+          timerCount = 0;
+
+          if (!(P1IN & BUTTON))
+          {
+            waitingRelease = 2;
+
+            switch (velocity) 
+            {
+              case 1:
+                TACCR1 = 75;
+                velocity++;
+                break;
+
+              case 2:
+                TACCR1 = 25;
+                velocity--;
+                break;
+
+            }
+          }
+
+          else
+          {
+            TA0CCTL2 &= ~CCIE;
+            waitingRelease = 0;
+            P1IFG &= ~BUTTON;
+            P1IE  |= BUTTON;
+          }
+
+        }
+      }
+
+    else if (waitingRelease == 2)
+    {
+      if (timerCount >= 400)
+      {
+        timerCount = 0;
+        
+        if (P1IN & BUTTON)
+        {
+          TA0CCTL2 &= ~CCIE;              // done with debounce
+          waitingRelease = 0;
+          P1IFG &= ~BUTTON;
+          P1IE  |= BUTTON; 
+        }
+      }
+    }
+
+    break;
+
+    case TA0IV_TAIFG:
+      break;
+  }
+}
