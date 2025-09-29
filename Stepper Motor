@@ -1,0 +1,114 @@
+#include <msp430.h>
+#define RedLED BIT0
+#define GreenLED BIT6
+#define BUTTON BIT3 
+
+volatile char stepOut = 1;
+volatile char speed = 1;
+volatile unsigned int speedVariable = 25000;
+
+int main(void)
+{
+  WDTCTL = WDTPW + WDTHOLD; // Stop watchdog timer
+
+  P1REN |= BUTTON;          // turn on pull-    resistor
+  P1OUT |= BUTTON;          // turn on pull-UP  resistor
+  P1IE  |= BUTTON;          // P1.3 interrupt enabled
+  P1IES |= BUTTON;          // P1.3 interrupt triggered on high-to-low transition
+  P1IFG &= ~BUTTON;         // P1.3 IFG cleared
+
+  P1DIR |= BIT4 | BIT5 | BIT6 | BIT7;
+  P1OUT &= ~(BIT4 + BIT5 + BIT6 + BIT7);
+
+  TACCR1 = 25000;
+  TA0CCTL1 = CCIE;
+
+  TACCR0 = 65000;
+  TACTL = TASSEL_2 + MC_2;
+
+ __enable_interrupt();     // enable all interrupts
+
+
+  LPM1;
+
+}
+#pragma vector=PORT1_VECTOR
+__interrupt void Port_1(void) 
+{
+    TA0CCTL0 = CCIE;
+    TAR = 0;
+    TACTL = TASSEL_2 + MC_1;
+    P1IFG &= ~BUTTON;
+    P1IE &= ~BUTTON;
+}
+
+#pragma vector=TIMER0_A0_VECTOR
+__interrupt void Timer_A (void)
+{
+  if (!(P1IN & BUTTON))
+  {
+    switch (speed) 
+    {
+      case 1:
+        speedVariable = 65000;
+        speed++;
+        break;
+
+      case 2:
+        speedVariable = 25000;
+        speed--;
+        break;
+    }
+  }
+
+  TACTL = TASSEL_2 + MC_2;
+  P1IE |= BUTTON;
+  TA0CCTL0 &= ~CCIE;
+
+}
+
+#pragma vector=TIMER0_A1_VECTOR
+__interrupt void Timer_A1 (void)
+{
+  switch (TA0IV) 
+  {
+    case TA0IV_TACCR1:
+      break;
+
+    case TA0IV_TACCR2:
+      break;
+
+    case TA0IV_TAIFG:
+      break;
+  }
+
+  switch (stepOut)
+  {
+    case 1:
+      P1OUT &= ~BIT7;
+      P1OUT |= BIT4;
+      stepOut++;
+      break;
+
+    case 2:
+      P1OUT &= ~BIT4;
+      P1OUT |= BIT5;
+      stepOut++;
+      break;
+
+    case 3:
+      P1OUT &= ~BIT5;
+      P1OUT |= BIT6;
+      stepOut++;
+      break;
+
+    case 4:
+      P1OUT &= ~BIT6;
+      P1OUT |= BIT7;
+      stepOut = 1;
+      break;
+
+  }
+
+  TACCR1 += speedVariable;
+}
