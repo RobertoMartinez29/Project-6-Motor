@@ -1,120 +1,119 @@
 #include <msp430.h>
+#define RedLED BIT0
+#define GreenLED BIT6
+#define BUTTON BIT3 
 
-/* =========================
-   Hardware & timing config
-   ========================= */
-#define BTN           BIT3                // P1.3 button (pull-up, active low)
-#define STEP_PINS     (BIT4|BIT5|BIT6|BIT7)
+volatile char stepOut = 1;
+volatile char speed = 1;
+volatile unsigned int speedVariable = 25000;
 
-#define STEP_SLOW_TICKS   65000u          // CCR1 delta for slow stepping
-#define STEP_FAST_TICKS   25000u          // CCR1 delta for fast stepping
-#define DEBOUNCE_TICKS    65000u          // CCR0 value during debounce window
-
-/* =========================
-   App state
-   ========================= */
-typedef enum { SPEED_SLOW = 1, SPEED_FAST = 2, SPEED_OFF = 3 } speed_t;
-
-volatile unsigned char step_idx = 1;      // 1..4
-volatile speed_t       speed    = SPEED_FAST;
-volatile unsigned int  step_ticks = STEP_FAST_TICKS;
-
-/* =========================
-   Helpers
-   ========================= */
-static inline void step_next(void) {
-  switch (step_idx) {
-    case 1: P1OUT &= ~BIT7; P1OUT |=  BIT4; step_idx = 2; break;
-    case 2: P1OUT &= ~BIT4; P1OUT |=  BIT5; step_idx = 3; break;
-    case 3: P1OUT &= ~BIT5; P1OUT |=  BIT6; step_idx = 4; break;
-    default:P1OUT &= ~BIT6; P1OUT |=  BIT7; step_idx = 1; break;
-  }
-}
-
-/* =========================
-   Main
-   ========================= */
 int main(void)
 {
-  WDTCTL = WDTPW | WDTHOLD;               // Stop watchdog
+  WDTCTL = WDTPW + WDTHOLD; // Stop watchdog timer
 
-  // Button: pull-up, interrupt on H→L
-  P1REN |= BTN;
-  P1OUT |= BTN;
-  P1IES |= BTN;
-  P1IFG &= ~BTN;
-  P1IE  |= BTN;
+  P1REN |= BUTTON;          // turn on pull-    resistor
+  P1OUT |= BUTTON;          // turn on pull-UP  resistor
+  P1IE  |= BUTTON;          // P1.3 interrupt enabled
+  P1IES |= BUTTON;          // P1.3 interrupt triggered on high-to-low transition
+  P1IFG &= ~BUTTON;         // P1.3 IFG cleared
 
-  // Step outputs as GPIO
-  P1SEL  &= ~STEP_PINS;
-  P1SEL2 &= ~STEP_PINS;
-  P1DIR  |=  STEP_PINS;
-  P1OUT  &= ~STEP_PINS;
+  P1DIR |= BIT4 | BIT5 | BIT6 | BIT7;
+  P1OUT &= ~(BIT4 + BIT5 + BIT6 + BIT7);
 
-  // Timer_A0: continuous mode for CCR1 stepping; CCR0 only used during debounce
-  TA0CTL   = TASSEL_2 | MC_2;             // SMCLK, continuous
-  TA0CCR1  = STEP_FAST_TICKS;
-  TA0CCTL1 = CCIE;                        // Enable CCR1 ISR
-  TA0CCTL0 = 0;                           // CCR0 idle (no interrupt)
+  TACCR1 = 25000;
+  TA0CCTL1 = CCIE;
 
-  __bis_SR_register(LPM1_bits | GIE);     // LPM1 + global interrupts
-  __no_operation();                       // For debugger
+  TACCR0 = 65000;
+  TACTL = TASSEL_2 + MC_2;
+
+  __enable_interrupt();     // enable all interrupts
+
+  __bis_SR_register(LPM1_bits);  // enter LPM1
 }
 
-/* =========================
-   ISRs
-   ========================= */
-
-// Button press → start debounce window on CCR0, ignore further button edges
 #pragma vector=PORT1_VECTOR
-__interrupt void PORT1_ISR(void)
+__interrupt void Port_1(void) 
 {
-  TA0CCTL0 = CCIE;                        // enable CCR0 interrupt
-  TA0CCR0  = TA0R + DEBOUNCE_TICKS;       // set debounce deadline
-  P1IFG   &= ~BTN;                        // clear port IFG
-  P1IE    &= ~BTN;                        // mask button until debounce completes
+    TA0CCTL0 = CCIE;
+    TA0CCTL0 &= ~CCIFG;          // clear stale CCR0 flag
+    TAR = 0;
+    TACTL = TASSEL_2 + MC_1;
+    P1IFG &= ~BUTTON;
+    P1IE &= ~BUTTON;
 }
 
-// Debounce finished → if still pressed, advance speed state; re-arm button
 #pragma vector=TIMER0_A0_VECTOR
-__interrupt void TA0_CCR0_ISR(void)
+__interrupt void Timer_A (void)
 {
-  if (!(P1IN & BTN)) {                    // still low = valid press
-    switch (speed) {
-      case SPEED_SLOW:
-        step_ticks = STEP_FAST_TICKS;
-        speed = SPEED_FAST;
-        TA0CCTL1 = CCIE;                  // make sure stepping is on
+  if (!(P1IN & BUTTON))
+  {
+    switch (speed) 
+    {
+      case 1:
+        TA0CCTL1 = CCIE;
+        speedVariable = 65000;
+        speed++;
         break;
 
-      case SPEED_FAST:
-        speed = SPEED_OFF;
-        TA0CCTL1 &= ~CCIE;                // stop stepping
+      case 2:
+        speedVariable = 25000;
+        speed++;
         break;
 
-      case SPEED_OFF:
-        step_ticks = STEP_SLOW_TICKS;
-        speed = SPEED_SLOW;
-        TA0CCTL1 = CCIE;                  // resume stepping
-        break;
+      case 3:
+        TA0CCTL1 &= ~CCIE;
+        speed = 1;
     }
   }
 
-  TA0CCTL0 = 0;                           // stop CCR0 (no more A0 interrupts)
-  P1IFG   &= ~BTN;                        // clean flags
-  P1IE    |=  BTN;                        // re-enable button edge
+  TACTL = TASSEL_2 + MC_2;
+  P1IE |= BUTTON;
+  TA0CCTL0 &= ~CCIE;
+
 }
 
-// Stepping: fire on CCR1; schedule next beat; TA0IV gates the source
 #pragma vector=TIMER0_A1_VECTOR
-__interrupt void TA0_A1_ISR(void)
+__interrupt void Timer_A1 (void)
 {
-  switch (TA0IV) {
-    case TA0IV_TACCR1:                    // CCR1 hit
-      step_next();
-      TA0CCR1 += step_ticks;              // next time
+  switch (TA0IV) 
+  {
+    case TA0IV_TACCR1:
       break;
-    default:
-      break;                              // CCR2/overflow unused
+
+    case TA0IV_TACCR2:
+      break;
+
+    case TA0IV_TAIFG:
+      break;
   }
+
+  switch (stepOut)
+  {
+    case 1:
+      P1OUT &= ~BIT7;
+      P1OUT |= BIT4;
+      stepOut++;
+      break;
+
+    case 2:
+      P1OUT &= ~BIT4;
+      P1OUT |= BIT5;
+      stepOut++;
+      break;
+
+    case 3:
+      P1OUT &= ~BIT5;
+      P1OUT |= BIT6;
+      stepOut++;
+      break;
+
+    case 4:
+      P1OUT &= ~BIT6;
+      P1OUT |= BIT7;
+      stepOut = 1;
+      break;
+
+  }
+
+  TACCR1 += speedVariable;
 }
